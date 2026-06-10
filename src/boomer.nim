@@ -463,6 +463,19 @@ proc main() =
           camera.deltaScale -= config.scrollSpeed
           camera.scalePivot = mouse.curr
 
+      proc move(idx: int, x: float) =
+        case idx
+        of 0:
+          if (xev.xkey.state and ShiftMask) > 0.uint32:
+            camera.velocity[0] = x * config.move_speed * 5.0 / camera.scale
+          else:
+            camera.velocity[0] = x * config.move_speed / camera.scale
+        else:
+          if (xev.xkey.state and ShiftMask) > 0.uint32:
+            camera.velocity[1] = x * config.move_speed * 5.0 / camera.scale
+          else:
+            camera.velocity[1] = x * config.move_speed / camera.scale
+
       case xev.theType
       of Expose:
         discard
@@ -525,13 +538,13 @@ proc main() =
           flashlight.isEnabled = not flashlight.isEnabled
           
         of XK_h:
-          camera.velocity[0] = -config.move_speed / camera.scale;
+          move(0,-1.0)
         of XK_j:
-          camera.velocity[1] = config.move_speed / camera.scale;
+          move(1,1.0)
         of XK_k:
-          camera.velocity[1] = -config.move_speed / camera.scale;
+          move(1,-1.0)
         of XK_l:
-          camera.velocity[0] = config.move_speed / camera.scale;
+          move(0,1.0)
           
         else:
           discard
