@@ -501,8 +501,8 @@ proc main() =
       of KeyPress:
         var key = XLookupKeysym(cast[PXKeyEvent](xev.addr), 0)
         case key
-        of XK_EQUAL: scrollUp()
-        of XK_MINUS: scrollDown()
+        of XK_EQUAL, XK_n: scrollUp()
+        of XK_MINUS, XK_p: scrollDown()
         of XK_0:
           camera.scale = 1.0
           camera.deltaScale = 0.0
