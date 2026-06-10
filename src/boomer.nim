@@ -523,9 +523,19 @@ proc main() =
 
         of XK_f:
           flashlight.isEnabled = not flashlight.isEnabled
+          
+        of XK_h:
+          camera.velocity[0] = -config.move_speed / camera.scale;
+        of XK_j:
+          camera.velocity[1] = config.move_speed / camera.scale;
+        of XK_k:
+          camera.velocity[1] = -config.move_speed / camera.scale;
+        of XK_l:
+          camera.velocity[0] = config.move_speed / camera.scale;
+          
         else:
           discard
-
+           
       of ButtonPress:
         case xev.xbutton.button
         of Button1:
