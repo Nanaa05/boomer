@@ -6,15 +6,15 @@ in rec {
     buildInputs = [ stdenv
                     gcc
                     gdb
-                    pkgconfig
+                    pkgs.pkg-config
                     nim_1_0
-                    xorg.libX11
-                    xorg.libXrandr
-                    xorg.libXext
+                    libX11
+                    libXrandr
+                    libXext
                     libGL
                     libGLU
                     freeglut
                   ];
-    LD_LIBRARY_PATH="/run/opengl-driver/lib;${xorg.libX11}/lib/;${libGL}/lib/;${libGLU}/lib;${freeglut}/lib;${xorg.libXrandr}/lib;${xorg.libXext}/lib";
+    LD_LIBRARY_PATH="/run/opengl-driver/lib;${libX11}/lib/;${libGL}/lib/;${libGLU}/lib;${freeglut}/lib;${libXrandr}/lib;${libXext}/lib";
   };
 }
