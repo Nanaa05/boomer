@@ -397,7 +397,18 @@ proc main() =
     discard XMapWindow(display, focusWin)
     # Grab the keyboard once. Re-taking focus every frame (as the static mode
     # does) makes Emacs flip between active/inactive faces, which flickers.
-    discard XGrabKeyboard(display, focusWin, 0, GrabModeAsync, GrabModeAsync, CurrentTime)
+    # The window manager may still hold the grab of the key that launched us
+    # (e.g. s-Z), so retry for a moment before giving up.
+    var grabbed = false
+    for _ in 0 ..< 100:
+      if XGrabKeyboard(display, focusWin, 0, GrabModeAsync, GrabModeAsync,
+                       CurrentTime) == GrabSuccess:
+        grabbed = true
+        break
+      sleep(20)
+    if not grabbed:
+      stderr.writeLine "boomer: could not grab the keyboard, falling back to focus"
+      discard XSetInputFocus(display, focusWin, RevertToParent, CurrentTime)
   else:
     discard XMapWindow(display, win)
 
@@ -657,6 +668,10 @@ proc main() =
           mouse.prev = mouse.curr
           mouse.drag = true
           camera.velocity = vec2(0.0, 0.0)
+        of Button3:
+          # live mode has no window to close, always keep a way out by mouse
+          if live:
+            quitting = true
         of Button4: scrollUp()
         of Button5: scrollDown()
         else:
