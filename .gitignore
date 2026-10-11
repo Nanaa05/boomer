@@ -4,3 +4,5 @@ boomer
 nimble.develop
 nimble.paths
 nimbledeps
+.devenv*
+devenv.local.nix

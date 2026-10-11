@@ -431,6 +431,8 @@ proc main() =
       isEnabled: false,
       radius: 200.0)
     mirror = false
+    warpPending = false
+    warpTarget = vec2(0.0'f32, 0.0)
 
   let dt = 1.0 / rate.float
   var originWindow: Window
@@ -481,8 +483,17 @@ proc main() =
         discard
 
       of MotionNotify:
-        mouse.curr = vec2(xev.xmotion.x.float32,
+        let motion = vec2(xev.xmotion.x.float32,
                           xev.xmotion.y.float32)
+
+        if warpPending:
+          # Events queued before the pointer warp still carry the old
+          # position. Drop them until the one at the warp target arrives.
+          if motion == warpTarget:
+            warpPending = false
+          continue
+
+        mouse.curr = motion
 
         if mouse.drag:
           let delta = world(camera, mouse.prev) - world(camera, mouse.curr)
@@ -491,6 +502,26 @@ proc main() =
           # frame. To turn the velocity into units/second we need to
           # multiple it by FPS.
           camera.velocity = delta * rate.float
+
+          # Infinite drag (like feh): when the pointer reaches a window
+          # edge, teleport it to the opposite edge. The delta of this
+          # event is already applied, so the panning stays continuous.
+          let
+            margin = 1.0'f32
+            w = wa.width.float32
+            h = wa.height.float32
+          var target = mouse.curr
+          if mouse.curr[0] <= margin: target[0] = w - 2.0'f32 * margin - 1.0'f32
+          elif mouse.curr[0] >= w - 1.0'f32 - margin: target[0] = 2.0'f32 * margin
+          if mouse.curr[1] <= margin: target[1] = h - 2.0'f32 * margin - 1.0'f32
+          elif mouse.curr[1] >= h - 1.0'f32 - margin: target[1] = 2.0'f32 * margin
+          if target != mouse.curr:
+            discard XWarpPointer(display, None, win, 0, 0, 0, 0,
+                                 target[0].cint, target[1].cint)
+            discard XFlush(display)
+            warpPending = true
+            warpTarget = target
+            mouse.curr = target
 
         mouse.prev = mouse.curr
 
@@ -564,6 +595,7 @@ proc main() =
         case xev.xbutton.button
         of Button1:
           mouse.drag = false
+          warpPending = false
         else:
           discard
       else:
