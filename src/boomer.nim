@@ -205,31 +205,37 @@ proc picomZoomAck(display: PDisplay): bool =
     sleep(10)
   false
 
-proc setPicomZoom(display: PDisplay, scale: float32, x, y: int) =
-  var v = [clong(scale * 1000.0), clong(x), clong(y)]
+var gLastZoom: array[3, clong]
+
+proc setPicomZoom(display: PDisplay, scale, x, y: float32) =
+  # scale, x and y in 1/1000 units: the view origin keeps sub-pixel precision
+  var v = [clong(scale * 1000.0), clong(x * 1000.0), clong(y * 1000.0)]
+  if v == gLastZoom:
+    return
+  gLastZoom = v
   discard XChangeProperty(display, DefaultRootWindow(display),
                           XInternAtom(display, "_BOOMER_ZOOM", 0), Atom(6), 32,
                           PropModeReplace, cast[PCUChar](addr v[0]), 3)
   discard XFlush(display)
 
+var gLastFlashlight: array[4, clong]
+
+proc setPicomFlashlight(display: PDisplay, x, y: int, radius, alpha: float32) =
+  var v = [clong(x), clong(y), clong(radius * 1000.0), clong(alpha * 1000.0)]
+  if v == gLastFlashlight:
+    return
+  gLastFlashlight = v
+  discard XChangeProperty(display, DefaultRootWindow(display),
+                          XInternAtom(display, "_BOOMER_FLASHLIGHT", 0), Atom(6), 32,
+                          PropModeReplace, cast[PCUChar](addr v[0]), 4)
+  discard XFlush(display)
+
 proc clearPicomZoom(display: PDisplay) =
+  discard XDeleteProperty(display, DefaultRootWindow(display),
+                          XInternAtom(display, "_BOOMER_FLASHLIGHT", 0))
   discard XDeleteProperty(display, DefaultRootWindow(display),
                           XInternAtom(display, "_BOOMER_ZOOM", 0))
   discard XFlush(display)
-
-# Live mode flashlight: picom draws the screen, so the dimming is a separate
-# 32-bit ARGB window under our input window. Pixel = premultiplied black at
-# `alpha`, with a fully transparent circle. Picom zooms it with everything else,
-# so all coordinates here are unzoomed screen pixels.
-proc drawFlashlightOverlay(display: PDisplay, overlay: Window, gc: GC,
-                           w, h: cuint, cx, cy, radius: float32, alpha: float32) =
-  let dim = culong(clamp(int(alpha * 255.0), 0, 255)) shl 24
-  discard XSetForeground(display, gc, dim)
-  discard XFillRectangle(display, overlay, gc, 0, 0, w, h)
-  discard XSetForeground(display, gc, 0)
-  let r = max(int(radius), 0)
-  discard XFillArc(display, overlay, gc, cint(int(cx) - r), cint(int(cy) - r),
-                   cuint(2 * r), cuint(2 * r), 0, 360 * 64)
 
 proc main() =
   let boomerDir = getConfigDir() / "boomer"
@@ -429,29 +435,6 @@ proc main() =
       discard XSetInputFocus(display, focusWin, RevertToParent, CurrentTime)
   else:
     discard XMapWindow(display, win)
-
-  var
-    overlay: Window = 0
-    overlayGc: GC = nil
-    overlayMapped = false
-    overlayKey = (cx: -1, cy: -1, r: -1, a: -1)
-  if live:
-    var vinfo: XVisualInfo
-    if XMatchVisualInfo(display, screen, 32, TrueColor, addr vinfo) != 0:
-      var owa: XSetWindowAttributes
-      owa.colormap = XCreateColormap(display, DefaultRootWindow(display),
-                                     vinfo.visual, AllocNone)
-      owa.border_pixel = 0
-      owa.background_pixel = 0
-      owa.override_redirect = 1
-      overlay = XCreateWindow(
-        display, DefaultRootWindow(display),
-        0, 0, attributes.width.cuint, attributes.height.cuint, 0,
-        32, InputOutput, vinfo.visual,
-        CWColormap or CWBorderPixel or CWBackPixel or CWOverrideRedirect, addr owa)
-      overlayGc = XCreateGC(display, overlay, 0, nil)
-    else:
-      stderr.writeLine "boomer: no 32-bit visual, flashlight is unavailable in live mode"
 
   var wmName = "boomer"
   var wmClass = "Boomer"
@@ -740,34 +723,12 @@ proc main() =
         winH = wa.height.float32
         centerX = screenshot.image.width.float32 * 0.5'f32 + camera.position[0]
         centerY = screenshot.image.height.float32 * 0.5'f32 + camera.position[1]
-        zoomX = max(int(centerX - winW / (2.0'f32 * camera.scale)), 0)
-        zoomY = max(int(centerY - winH / (2.0'f32 * camera.scale)), 0)
+        zoomX = max(centerX - winW / (2.0'f32 * camera.scale), 0.0'f32)
+        zoomY = max(centerY - winH / (2.0'f32 * camera.scale), 0.0'f32)
       setPicomZoom(display, camera.scale, zoomX, zoomY)
-
-      if overlay != 0:
-        if flashlight.shadow > 0.01:
-          let
-            cx = int(zoomX.float32 + mouse.curr[0] / camera.scale)
-            cy = int(zoomY.float32 + mouse.curr[1] / camera.scale)
-            key = (cx: cx, cy: cy, r: int(flashlight.radius),
-                   a: int(flashlight.shadow * 255.0))
-          if not overlayMapped:
-            discard XMapWindow(display, overlay)
-            # the input window must stay on top to keep getting the events
-            discard XRaiseWindow(display, focusWin)
-            overlayMapped = true
-            overlayKey = (cx: -1, cy: -1, r: -1, a: -1)
-          if key != overlayKey:
-            overlayKey = key
-            drawFlashlightOverlay(display, overlay, overlayGc,
-                                  attributes.width.cuint, attributes.height.cuint,
-                                  cx.float32, cy.float32, flashlight.radius,
-                                  flashlight.shadow)
-            discard XFlush(display)
-        elif overlayMapped:
-          discard XUnmapWindow(display, overlay)
-          overlayMapped = false
-          discard XFlush(display)
+      # the flashlight is drawn by picom, per output pixel, after the zoom
+      setPicomFlashlight(display, mouse.curr[0].int, mouse.curr[1].int,
+                         flashlight.radius * camera.scale, flashlight.shadow)
       sleep(max(int(1000.0 * dt), 1))
     else:
       screenshot.image.draw(camera, shaderProgram, vao, texture,
@@ -809,8 +770,6 @@ proc main() =
                    GL_UNSIGNED_BYTE,
                    screenshot.image.data)
   if live:
-    if overlay != 0:
-      discard XDestroyWindow(display, overlay)
     discard XUngrabKeyboard(display, CurrentTime)
   else:
     discard XSetInputFocus(display, originWindow, RevertToParent, CurrentTime);
