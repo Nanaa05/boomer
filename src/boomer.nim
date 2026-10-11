@@ -194,9 +194,13 @@ proc picomZoomAck(display: PDisplay): bool =
     discard XGetWindowProperty(display, DefaultRootWindow(display), ack, 0, 1, 0,
                                AnyPropertyType, addr actualType, addr actualFormat,
                                addr nItems, addr bytesAfter, addr data)
+    var alive = false
     if data != nil:
+      # picom stores its pid; a leftover from a picom that died doesn't count
+      if nItems.int > 0 and actualFormat == 32:
+        alive = dirExists("/proc/" & $(cast[ptr clong](data)[]))
       discard XFree(data)
-    if nItems.int > 0:
+    if alive:
       return true
     sleep(10)
   false
