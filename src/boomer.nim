@@ -1,4 +1,5 @@
 import os
+import posix
 
 import navigation
 import screenshot
@@ -175,10 +176,48 @@ proc xElevenErrorHandler(display: PDisplay, errorEvent: PXErrorEvent): cint{.cde
   discard XGetErrorText(display, errorEvent.error_code.cint, cast[cstring](addr errorMessage), CAPACITY)
   echo "X ELEVEN ERROR: ", $(cast[cstring](addr errorMessage))
 
+var gQuit = false
+
+proc onSignal(sig: cint) {.noconv.} =
+  gQuit = true
+
+# Live mode talks to a picom patched with picom-zoom.patch through root window
+# properties: _BOOMER_ZOOM_ACK (set by picom) and _BOOMER_ZOOM (set by us).
+proc picomZoomAck(display: PDisplay): bool =
+  let ack = XInternAtom(display, "_BOOMER_ZOOM_ACK", 0)
+  for _ in 0 ..< 10:
+    var
+      actualType: Atom
+      actualFormat: cint
+      nItems, bytesAfter: culong
+      data: ptr cuchar
+    discard XGetWindowProperty(display, DefaultRootWindow(display), ack, 0, 1, 0,
+                               AnyPropertyType, addr actualType, addr actualFormat,
+                               addr nItems, addr bytesAfter, addr data)
+    if data != nil:
+      discard XFree(data)
+    if nItems.int > 0:
+      return true
+    sleep(10)
+  false
+
+proc setPicomZoom(display: PDisplay, scale: float32, x, y: int) =
+  var v = [clong(scale * 1000.0), clong(x), clong(y)]
+  discard XChangeProperty(display, DefaultRootWindow(display),
+                          XInternAtom(display, "_BOOMER_ZOOM", 0), Atom(6), 32,
+                          PropModeReplace, cast[PCUChar](addr v[0]), 3)
+  discard XFlush(display)
+
+proc clearPicomZoom(display: PDisplay) =
+  discard XDeleteProperty(display, DefaultRootWindow(display),
+                          XInternAtom(display, "_BOOMER_ZOOM", 0))
+  discard XFlush(display)
+
 proc main() =
   let boomerDir = getConfigDir() / "boomer"
   var configFile = boomerDir / "config"
   var windowed = false
+  var live = false
   var delaySec = 0.0
 
   # TODO(#95): Make boomer optionally wait for some kind of event (for example, key press)
@@ -193,7 +232,8 @@ proc main() =
       --new-config [filepath]   generate a new default config at [filepath]
   -c, --config <filepath>       use config at <filepath>
   -V, --version                 show the current version and exit
-  -w, --windowed                windowed mode instead of fullscreen"""
+  -w, --windowed                windowed mode instead of fullscreen
+  -L, --live                    zoom the live screen (needs the patched picom)"""
     var i = 1
     while i <= paramCount():
       let arg = paramStr(i)
@@ -228,6 +268,9 @@ proc main() =
       of "-d", "--delay":
         asParam(delayParam):
           delaySec = parseFloat(delayParam)
+      of "-L", "--live":
+        asFlag():
+          live = true
       of "-w", "--windowed":
         asFlag():
           windowed = true
@@ -273,6 +316,17 @@ proc main() =
     discard XCloseDisplay(display)
 
   discard XSetErrorHandler(xElevenErrorHandler)
+
+  if live and not picomZoomAck(display):
+    echo "No patched picom found, falling back to the static screenshot"
+    live = false
+  if live:
+    signal(SIGTERM, onSignal)
+    signal(SIGINT, onSignal)
+    signal(SIGHUP, onSignal)
+  defer:
+    if live:
+      clearPicomZoom(display)
 
   when defined(select):
     echo "Please select window:"
@@ -328,7 +382,24 @@ proc main() =
     vi.depth, InputOutput, vi.visual,
     CWColormap or CWEventMask or CWOverrideRedirect or CWSaveUnder, addr swa)
 
-  discard XMapWindow(display, win)
+  # In live mode the GL window stays unmapped; a transparent input-only window
+  # takes the keyboard and mouse while picom draws the zoomed screen.
+  var focusWin = win
+  if live:
+    var iwa: XSetWindowAttributes
+    iwa.event_mask = swa.event_mask
+    iwa.override_redirect = 1
+    focusWin = XCreateWindow(
+      display, DefaultRootWindow(display),
+      0, 0, attributes.width.cuint, attributes.height.cuint, 0,
+      0, InputOnly, nil,
+      CWEventMask or CWOverrideRedirect, addr iwa)
+    discard XMapWindow(display, focusWin)
+    # Grab the keyboard once. Re-taking focus every frame (as the static mode
+    # does) makes Emacs flip between active/inactive faces, which flickers.
+    discard XGrabKeyboard(display, focusWin, 0, GrabModeAsync, GrabModeAsync, CurrentTime)
+  else:
+    discard XMapWindow(display, win)
 
   var wmName = "boomer"
   var wmClass = "Boomer"
@@ -438,10 +509,10 @@ proc main() =
   var originWindow: Window
   var revertToReturn: cint
   discard XGetInputFocus(display, addr originWindow, addr revertToReturn)
-  while not quitting:
+  while not quitting and not gQuit:
     # TODO(#78): Is there a better solution to keep the focus always on the window?
-    if not windowed:
-      discard XSetInputFocus(display, win, RevertToParent, CurrentTime);
+    if not windowed and not live:
+      discard XSetInputFocus(display, focusWin, RevertToParent, CurrentTime);
 
     var wa: XWindowAttributes
     discard XGetWindowAttributes(display, win, addr wa)
@@ -516,7 +587,7 @@ proc main() =
           if mouse.curr[1] <= margin: target[1] = h - 2.0'f32 * margin - 1.0'f32
           elif mouse.curr[1] >= h - 1.0'f32 - margin: target[1] = 2.0'f32 * margin
           if target != mouse.curr:
-            discard XWarpPointer(display, None, win, 0, 0, 0, 0,
+            discard XWarpPointer(display, None, focusWin, 0, 0, 0, 0,
                                  target[0].cint, target[1].cint)
             discard XFlush(display)
             warpPending = true
@@ -605,12 +676,25 @@ proc main() =
                   vec2(wa.width.float32, wa.height.float32))
     flashlight.update(dt)
 
-    screenshot.image.draw(camera, shaderProgram, vao, texture,
-                          vec2(wa.width.float32, wa.height.float32),
-                          mouse, flashlight, mirror)
+    if live:
+      # picom does the drawing: tell it which part of the screen to show
+      camera.scale = max(camera.scale, 1.0'f32)
+      let
+        winW = wa.width.float32
+        winH = wa.height.float32
+        centerX = screenshot.image.width.float32 * 0.5'f32 + camera.position[0]
+        centerY = screenshot.image.height.float32 * 0.5'f32 + camera.position[1]
+        zoomX = max(int(centerX - winW / (2.0'f32 * camera.scale)), 0)
+        zoomY = max(int(centerY - winH / (2.0'f32 * camera.scale)), 0)
+      setPicomZoom(display, camera.scale, zoomX, zoomY)
+      sleep(max(int(1000.0 * dt), 1))
+    else:
+      screenshot.image.draw(camera, shaderProgram, vao, texture,
+                            vec2(wa.width.float32, wa.height.float32),
+                            mouse, flashlight, mirror)
 
-    glXSwapBuffers(display, win)
-    glFinish()
+      glXSwapBuffers(display, win)
+      glFinish()
 
     when defined(live):
       screenshot.refresh(display, trackingWindow)
@@ -643,7 +727,10 @@ proc main() =
                    GL_BGRA,
                    GL_UNSIGNED_BYTE,
                    screenshot.image.data)
-  discard XSetInputFocus(display, originWindow, RevertToParent, CurrentTime);
+  if live:
+    discard XUngrabKeyboard(display, CurrentTime)
+  else:
+    discard XSetInputFocus(display, originWindow, RevertToParent, CurrentTime);
   discard XSync(display, 0)
 
 main()
