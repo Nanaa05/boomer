@@ -6,6 +6,7 @@ type Config* = object
   drag_friction*: float
   scale_friction*: float
   move_speed*: float
+  clamp_edges*: bool
 
 const defaultConfig* = Config(
   min_scale: 0.01,
@@ -13,6 +14,7 @@ const defaultConfig* = Config(
   drag_friction: 6.0,
   scale_friction: 4.0,
   move_speed: 2000.0,
+  clamp_edges: true,
 )
 
 proc loadConfig*(filePath: string): Config =
@@ -35,6 +37,8 @@ proc loadConfig*(filePath: string): Config =
       result.scale_friction = parseFloat(value)
     of "move_speed":
       result.move_speed = parseFloat(value)
+    of "clamp_edges":
+      result.clamp_edges = parseBool(value)
     else:
       quit "Unknown config key `$#`" % [key]
 
@@ -46,3 +50,4 @@ proc generateDefaultConfig*(filePath: string) =
   f.write("drag_friction = ", defaultConfig.drag_friction, "\n")
   f.write("scale_friction = ", defaultConfig.scale_friction, "\n")
   f.write("move_speed = ", defaultConfig.move_speed, "\n")
+  f.write("clamp_edges = ", defaultConfig.clamp_edges, "\n")
